@@ -243,7 +243,7 @@ def partner_detail_page() -> rx.Component:
                                         star_rating(partner["rating"]),
                                         rx.text(partner["rating"].to_string(), size="2", color="#374151"),
                                         rx.text(
-                                            "(" + partner["reviews_count"].to_string() + " отзывов)",
+                                            "(" + partner["reviews_count"].to(str) + " отзывов)",
                                             size="2",
                                             color="#9ca3af",
                                         ),
@@ -257,8 +257,8 @@ def partner_detail_page() -> rx.Component:
                                             rx.text(
                                                 rx.cond(
                                                     partner["address"],
-                                                    partner["city"] + ", " + partner["address"],
-                                                    partner["city"],
+                                                    partner["city"].to(str) + ", " + partner["address"].to(str),
+                                                    partner["city"].to(str),
                                                 ),
                                                 size="2",
                                                 color="#6b7280",
