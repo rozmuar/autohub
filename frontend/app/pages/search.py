@@ -189,7 +189,7 @@ def _partner_card(p: dict) -> rx.Component:
         rx.el.div(
             rx.el.a(
                 p["name"],
-                href=rx.Var.create("/partners/") + p["id"],
+                href="/partners/" + p["id"].to(str),
                 class_name="sh-card-name",
             ),
             rx.el.div(
@@ -216,12 +216,12 @@ def _partner_card(p: dict) -> rx.Component:
         rx.el.div(
             rx.el.a(
                 "Подробнее →",
-                href=rx.Var.create("/partners/") + p["id"],
+                href="/partners/" + p["id"].to(str),
                 class_name="sh-btn-detail",
             ),
             rx.el.a(
                 "Позвонить",
-                href=rx.Var.create("tel:") + p["phone"],
+                href="tel:" + p["phone"].to(str),
                 class_name="sh-btn-call",
             ),
             class_name="sh-card-actions",
