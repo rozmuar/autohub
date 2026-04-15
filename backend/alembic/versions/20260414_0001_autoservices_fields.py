@@ -25,7 +25,6 @@ def upgrade() -> None:
     op.add_column("partners", sa.Column("subcategory", sa.String(500), nullable=True))
     op.add_column("partners", sa.Column("is_imported", sa.Boolean(), nullable=False, server_default=sa.text("false")))
     op.add_column("partners", sa.Column("yamap_reviews_count", sa.Integer(), nullable=False, server_default=sa.text("0")))
-    op.add_column("partners", sa.Column("subscription_plan", sa.String(20), nullable=False, server_default="free"))
 
     # Уникальный индекс по yamap_id
     op.create_unique_constraint("uq_partners_yamap_id", "partners", ["yamap_id"])
@@ -37,7 +36,6 @@ def downgrade() -> None:
     op.drop_index("ix_partners_region", table_name="partners")
     op.drop_index("ix_partners_yamap_id", table_name="partners")
     op.drop_constraint("uq_partners_yamap_id", "partners", type_="unique")
-    op.drop_column("partners", "subscription_plan")
     op.drop_column("partners", "yamap_reviews_count")
     op.drop_column("partners", "is_imported")
     op.drop_column("partners", "subcategory")
