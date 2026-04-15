@@ -1,0 +1,140 @@
+version: "3.9"
+
+# ═══════════════════════════════════════════════════════════════
+#  Production docker-compose — Yandex Cloud
+#  Используется Managed Services (PostgreSQL, Redis, ES — внешние)
+#  Здесь только приложение + nginx
+# ═══════════════════════════════════════════════════════════════
+
+name: autohub-prod
+
+services:
+
+  # ─── FastAPI Backend ─────────────────────────────────────────────
+  api:
+    image: ${REGISTRY:-cr.yandex}/autohub/backend:${IMAGE_TAG:-latest}
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      BACKEND_WORKERS: ${BACKEND_WORKERS:-4}
+    expose:
+      - "8000"
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: >
+      gunicorn app.main:app
+        -w ${BACKEND_WORKERS:-4}
+        -k uvicorn.workers.UvicornWorker
+        --bind 0.0.0.0:8000
+        --timeout 60
+        --graceful-timeout 30
+        --access-logfile -
+        --error-logfile -
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ─── Celery Worker ───────────────────────────────────────────────
+  celery-worker:
+    image: ${REGISTRY:-cr.yandex}/autohub/backend:${IMAGE_TAG:-latest}
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+    deploy:
+      replicas: 2
+    command: >
+      celery -A app.worker worker
+        --loglevel=warning
+        --concurrency=4
+        -Q default,notifications,payments
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ─── Celery Beat ─────────────────────────────────────────────────
+  celery-beat:
+    image: ${REGISTRY:-cr.yandex}/autohub/backend:${IMAGE_TAG:-latest}
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+    deploy:
+      replicas: 1   # Beat должен быть один!
+    command: >
+      celery -A app.worker beat
+        --loglevel=warning
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─── Reflex Frontend ─────────────────────────────────────────────
+  frontend:
+    image: ${REGISTRY:-cr.yandex}/autohub/frontend:${IMAGE_TAG:-latest}
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      API_URL: http://api:8000
+    expose:
+      - "3000"
+      - "8001"
+    deploy:
+      replicas: 2
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ─── Nginx (reverse proxy) ───────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - frontend
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  nginx_logs:

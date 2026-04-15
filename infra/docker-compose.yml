@@ -1,0 +1,250 @@
+name: autohub-dev
+
+services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: autohub_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-autohub_db}
+      POSTGRES_USER: ${POSTGRES_USER:-autohub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autohub} -d ${POSTGRES_DB:-autohub_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: autohub_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Elasticsearch ───────────────────────────────────────────────
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: autohub_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:-devpassword}
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  # ─── MinIO (S3-совместимое хранилище) ────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: autohub_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # MinIO Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─── MinIO инициализация бакетов ─────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: autohub_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin123} &&
+        mc mb --ignore-existing local/${S3_BUCKET_MEDIA:-autohub-media} &&
+        mc mb --ignore-existing local/${S3_BUCKET_DOCS:-autohub-docs} &&
+        mc anonymous set download local/${S3_BUCKET_MEDIA:-autohub-media} &&
+        echo 'Buckets initialized'
+      "
+    restart: "no"
+
+  # ─── RabbitMQ ────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: autohub_rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-autohub}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-devpassword}
+      RABBITMQ_DEFAULT_VHOST: autohub
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # RabbitMQ Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ─── FastAPI Backend ─────────────────────────────────────────────
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: autohub_api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autohub}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-autohub_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      S3_ENDPOINT_URL: http://minio:9000
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-autohub}:${RABBITMQ_PASSWORD:-devpassword}@rabbitmq:5672/autohub
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend/app:/app/app   # hot-reload в dev
+      - ../yamap.csv:/app/yamap.csv:ro   # данные автосервисов для импорта
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --log-level debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─── Celery Worker ───────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: autohub_celery_worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autohub}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-autohub_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: >
+      celery -A app.worker worker
+        --loglevel=info
+        --concurrency=2
+        -Q default,notifications,payments
+
+  # ─── Celery Beat (планировщик задач) ─────────────────────────────
+  celery-beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: autohub_celery_beat
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autohub}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-autohub_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.worker beat
+        --loglevel=info
+
+  # ─── Flower (мониторинг Celery) ───────────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    container_name: autohub_flower
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      FLOWER_PORT: 5555
+      FLOWER_BASIC_AUTH: admin:devpassword
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+  # ─── Reflex Frontend ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: autohub_frontend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      API_URL: http://api:8000
+      YANDEX_MAPS_KEY: ${YANDEX_MAPS_KEY:-}
+    ports:
+      - "3000:3000"
+      - "8001:8001"   # Reflex websocket
+    volumes:
+      - ../frontend/app:/app/app   # hot-reload
+      - ../frontend/assets:/app/assets  # static assets
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+  minio_data:
+  rabbitmq_data:
