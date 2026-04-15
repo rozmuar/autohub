@@ -51,7 +51,6 @@ services:
       - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:-devpassword}
       - bootstrap.memory_lock=false
       - indices.breaker.total.use_real_memory=false
-    mem_limit: 512m
     ports:
       - "9200:9200"
     volumes:
