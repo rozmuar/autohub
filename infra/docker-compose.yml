@@ -47,8 +47,11 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
       - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:-devpassword}
+      - bootstrap.memory_lock=false
+      - indices.breaker.total.use_real_memory=false
+    mem_limit: 512m
     ports:
       - "9200:9200"
     volumes:
