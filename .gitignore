@@ -64,6 +64,3 @@ infra/nginx/ssl/*.crt
 firebase-credentials.json
 secrets/
 
-# Данные
-yamap.csv
-
