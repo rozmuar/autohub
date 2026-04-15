@@ -142,7 +142,6 @@ services:
     volumes:
       - ../backend/app:/app/app   # hot-reload в dev
       - ../backend/alembic:/app/alembic   # autogenerate пишет на хост
-      - ../yamap.csv:/app/yamap.csv:ro   # данные автосервисов для импорта
     depends_on:
       postgres:
         condition: service_healthy
